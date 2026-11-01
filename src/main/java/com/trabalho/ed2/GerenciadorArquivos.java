@@ -6,6 +6,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.List;
 
 public class GerenciadorArquivos {
@@ -13,6 +14,17 @@ public class GerenciadorArquivos {
     private String pastaRaiz;
     private String pastaProcessado;
     private String pastaNaoProcessado;
+
+    // Grafo e nomes dos nós do último arquivo lido (índice da lista = vértice do grafo)
+    private Grafo grafo;
+    private List<String> nos;
+
+    // Controle da rota automática (thread que roda em background)
+    private Thread threadAutomatica;
+    private volatile boolean rotaAutomatica = false;
+
+    // Opção "Rota automática" da tela de configuração
+    private boolean usarRotaAutomatica = false;
 
     public GerenciadorArquivos() {
         // Define os caminhos padrão
@@ -56,16 +68,17 @@ public class GerenciadorArquivos {
         }
 
         List<String> linhas = Files.readAllLines(arquivoConfig.toPath());
+        linhas.removeIf(String::isBlank);
 
 
-        // Teste 1.3: Arquivo em branco ou incompleto
+        // Teste 1.3 e 1.4: Arquivo em branco ou faltando a linha 2
         // Define o conteúdo padrão esperado
         String linha1Esperada = "Processado=C:\\Teste\\Processado";
         String linha2Esperada = "Nao Processado=C:\\Teste\\NaoProcessado";
 
-        // Verifica se está vazio, incompleto OU se o conteúdo de alguma linha está incorreto
-        if (linhas.size() < 2 || !linhas.get(0).equals(linha1Esperada) || !linhas.get(1).equals(linha2Esperada)) {
-            System.out.println("Arquivo config.txt inválido, incompleto ou com valores incorretos. Corrigindo...");
+        // Só recria se estiver vazio ou incompleto. Se tiver linha errada (ex: '@'), cai na exceção lá embaixo (Teste 1.5)
+        if (linhas.size() < 2) {
+            System.out.println("Arquivo config.txt em branco ou incompleto. Corrigindo...");
 
             // Sobrescreve o arquivo com os dados corretos
             try (java.io.FileWriter fw = new java.io.FileWriter(arquivoConfig, false);
@@ -95,21 +108,77 @@ public class GerenciadorArquivos {
                 this.pastaProcessado = linha.split("=")[1];
             } else if (linha.startsWith("Não Processado=") || linha.startsWith("Nao Processado=")) {
                 this.pastaNaoProcessado = linha.split("=")[1];
+            } else if (linha.startsWith("Pasta=")) {
+                this.pastaRaiz = linha.split("=")[1];
+            } else if (linha.startsWith("Rota Automatica=")) {
+                this.usarRotaAutomatica = linha.split("=")[1].equalsIgnoreCase("Sim");
             } else if (!linha.trim().isEmpty()) {
                 throw new Exception("EXCEÇÃO: Formato inválido no config.txt (falta o '=').");
             }
         }
 
-        // Cria os diretórios de destino se não existirem
+        // Cria os diretórios se não existirem
+        new File(pastaRaiz).mkdirs();
         new File(pastaProcessado).mkdirs();
         new File(pastaNaoProcessado).mkdirs();
+
+        // Com rota automática fica verificando a pasta, senão processa o que tiver uma vez só
+        if (usarRotaAutomatica) {
+            iniciarRotaAutomatica();
+        } else {
+            pararRotaAutomatica();
+            processarTodosArquivos();
+        }
+    }
+
+    public boolean existeConfiguracao() {
+        return new File("C:\\Teste\\Configuracao\\config.txt").exists();
+    }
+
+    /**
+     * Grava o config.txt com o que foi preenchido na tela de configurações.
+     */
+    public void salvarConfiguracao(String pasta, String sucesso, String erro, boolean automatica) throws Exception {
+        File arquivoConfig = new File("C:\\Teste\\Configuracao\\config.txt");
+        arquivoConfig.getParentFile().mkdirs();
+
+        try (java.io.FileWriter fw = new java.io.FileWriter(arquivoConfig, false);
+             java.io.BufferedWriter bw = new java.io.BufferedWriter(fw)) {
+
+            bw.write("Processado=" + sucesso);
+            bw.newLine();
+            bw.write("Nao Processado=" + erro);
+            bw.newLine();
+            bw.write("Pasta=" + pasta);
+            bw.newLine();
+            bw.write("Rota Automatica=" + (automatica ? "Sim" : "Nao"));
+
+        } catch (java.io.IOException e) {
+            throw new Exception("EXCEÇÃO: Não foi possível salvar o config.txt.", e);
+        }
+    }
+
+    public String getPastaRaiz() {
+        return pastaRaiz;
+    }
+
+    public String getPastaProcessado() {
+        return pastaProcessado;
+    }
+
+    public String getPastaNaoProcessado() {
+        return pastaNaoProcessado;
+    }
+
+    public boolean isUsarRotaAutomatica() {
+        return usarRotaAutomatica;
     }
 
     /**
      * Busca todos os arquivos rotaNN.txt na pasta raiz e os processa.
      * Requisito do PDF: "O sistema deverá permitir a leitura de vários arquivos... e tratar TODOS ao mesmo tempo."
      */
-    public void processarTodosArquivos() {
+    public synchronized void processarTodosArquivos() {
         File diretorio = new File(pastaRaiz);
 
         // Lista todos os arquivos que começam com "rota" e terminam com ".txt" (ignorando maiúsculas/minúsculas)
@@ -127,6 +196,41 @@ public class GerenciadorArquivos {
         for (File arquivo : arquivos) {
             processarArquivoRota(arquivo.getName());
         }
+    }
+
+    /**
+     * Rota automática: verifica a pasta raiz a cada 10 segundos e processa os arquivos que chegarem (Teste 2.3).
+     */
+    public void iniciarRotaAutomatica() {
+        if (rotaAutomatica) {
+            return; // já está rodando
+        }
+
+        rotaAutomatica = true;
+        threadAutomatica = new Thread(() -> {
+            while (rotaAutomatica) {
+                processarTodosArquivos();
+                try {
+                    Thread.sleep(10000);
+                } catch (InterruptedException e) {
+                    break; // pediram pra parar
+                }
+            }
+        });
+        System.out.println("Rota automática ligada. Verificando a pasta " + pastaRaiz + " a cada 10 segundos...");
+        threadAutomatica.start();
+    }
+
+    public void pararRotaAutomatica() {
+        if (!rotaAutomatica) {
+            return; // já está parada
+        }
+
+        rotaAutomatica = false;
+        if (threadAutomatica != null) {
+            threadAutomatica.interrupt();
+        }
+        System.out.println("Rota automática desligada.");
     }
 
     /**
@@ -154,8 +258,9 @@ public class GerenciadorArquivos {
 
     /**
      * Realiza as validações de Header e Trailer.
+     * Também é usado pela tela Visível para carregar um arquivo na tabela.
      */
-    private void validarArquivo(File arquivo) throws Exception {
+    public void validarArquivo(File arquivo) throws Exception {
         List<String> linhas = Files.readAllLines(arquivo.toPath());
 
         if (linhas.isEmpty()) {
@@ -174,12 +279,14 @@ public class GerenciadorArquivos {
             throw new Exception("Header inválido: Tamanho incorreto (esperado 9 caracteres). Encontrado: " + header);
         }
 
+        int numNosHeader;
         int somaPesosHeader;
         try {
-            // Pega os 5 últimos caracteres do header e converte para número
+            // Pega o NN (posições 2 e 3) e os 5 últimos caracteres do header
+            numNosHeader = Integer.parseInt(header.substring(2, 4));
             somaPesosHeader = Integer.parseInt(header.substring(4, 9));
         } catch (NumberFormatException e) {
-            throw new Exception("Header inválido: A soma de pesos (SP) não é um número válido.");
+            throw new Exception("Header inválido: NN ou SP não é um número válido.");
         }
 
         // --- VALIDAÇÃO DO TRAILER ---
@@ -212,6 +319,10 @@ public class GerenciadorArquivos {
         int contPesos = 0;
         int somaPesosCalculada = 0;
 
+        List<String> nosArquivo = new ArrayList<>();
+        List<String> conexoes = new ArrayList<>();
+        List<String[]> arestas = new ArrayList<>();
+
         // Percorre o meio do arquivo (entre header e trailer)
         for (int i = 1; i < linhas.size() - 1; i++) {
             String linhaAtual = linhas.get(i);
@@ -220,22 +331,43 @@ public class GerenciadorArquivos {
                 contConexoes++;
 
                 // Validação de formato: 01 + Letras + = + Letras (ex: 01A=B ou 01AA=BB)
-                if (!linhaAtual.matches("01[A-Z]+=[A-Z]+")) {
+                if (!linhaAtual.matches("01[A-Z]{1,2}=[A-Z]{1,2}")) {
                     throw new Exception("Resumo de conexões inválido: Formato incorreto ou uso de números na linha " + linhaAtual);
                 }
+
+                // Guarda a conexão e os nós que aparecem nela
+                String[] partes = linhaAtual.substring(2).split("=");
+                conexoes.add(partes[0] + "=" + partes[1]);
+                if (!nosArquivo.contains(partes[0])) nosArquivo.add(partes[0]);
+                if (!nosArquivo.contains(partes[1])) nosArquivo.add(partes[1]);
 
             } else if (linhaAtual.startsWith("02")) {
                 contPesos++;
 
                 // Validação de formato: 02 + Letras + ; + Letras + = + Números de 4 dígitos
-                if (!linhaAtual.matches("02[A-Z]+;[A-Z]+=\\d{4}")) {
+                if (!linhaAtual.matches("02[A-Z]{1,2};[A-Z]{1,2}=\\d{4}")) {
                     throw new Exception("Resumo de pesos inválido: Formato incorreto na linha " + linhaAtual);
                 }
 
-                // Extrai a string do peso e converte para inteiro para somar
-                String pesoStr = linhaAtual.substring(linhaAtual.indexOf("=") + 1);
-                somaPesosCalculada += Integer.parseInt(pesoStr);
+                // Separa origem, destino e peso (ex: 02A;B=0010 -> A, B, 0010)
+                String[] partes = linhaAtual.substring(2).split("[;=]");
+
+                // O peso tem que ser de uma conexão que existe no resumo de conexões
+                if (!conexoes.contains(partes[0] + "=" + partes[1]) && !conexoes.contains(partes[1] + "=" + partes[0])) {
+                    throw new Exception("Resumo de pesos inválido: A conexão " + partes[0] + "=" + partes[1] + " não existe no resumo de conexões.");
+                }
+
+                somaPesosCalculada += Integer.parseInt(partes[2]);
+                arestas.add(partes);
+
+            } else {
+                throw new Exception("Linha inválida no arquivo: " + linhaAtual);
             }
+        }
+
+        // Teste 1.6: NN do header tem que bater com a quantidade de nós das conexões
+        if (nosArquivo.size() != numNosHeader) {
+            throw new Exception("Número totais de nós inválido. Header = " + numNosHeader + ", encontrados no arquivo = " + nosArquivo.size());
         }
 
         // Teste 2.0: Confrontar número de linhas de conexão
@@ -253,10 +385,27 @@ public class GerenciadorArquivos {
             throw new Exception("Soma dos pesos difere: Header = " + somaPesosHeader + ", Trailer = " + somaPesosTrailer);
         }
 
-        // Validação: Soma real das arestas deve ser igual à informada no Header/Trailer
+        // Teste 1.7: Soma real das arestas deve ser igual à informada no Header/Trailer
         if (somaPesosCalculada != somaPesosHeader) {
-            throw new Exception("Soma dos pesos das arestas ("+somaPesosCalculada+") difere do informado no Header/Trailer ("+somaPesosHeader+").");
+            throw new Exception("Soma dos pesos difere (Valor do Registro HEADER = " + somaPesosHeader + " e Soma dos Pesos = " + somaPesosCalculada + ")");
         }
+
+        // Arquivo válido: monta o grafo (o nó "A" vira o índice dele na lista nosArquivo)
+        Grafo grafoArquivo = new Grafo(nosArquivo.size());
+        for (String[] aresta : arestas) {
+            grafoArquivo.criaArestar(nosArquivo.indexOf(aresta[0]), nosArquivo.indexOf(aresta[1]), Integer.parseInt(aresta[2]));
+        }
+
+        this.grafo = grafoArquivo;
+        this.nos = nosArquivo;
+    }
+
+    public Grafo getGrafo() {
+        return grafo;
+    }
+
+    public List<String> getNos() {
+        return nos;
     }
 
     /**
