@@ -1,20 +1,15 @@
 package com.trabalho.ed2;
 
+import javax.swing.SwingUtilities;
+
 public class Main {
     public static void main(String[] args) {
-        GerenciadorArquivos gerenciador = new GerenciadorArquivos();
+        SwingUtilities.invokeLater(() -> {
+            TelaPrincipal tela = new TelaPrincipal();
+            tela.setVisible(true);
 
-        try {
-            // 1. Testa a leitura do config e criação das pastas
-            gerenciador.inicializarConfiguracao();
-            System.out.println("Configuração carregada e pastas criadas com sucesso!");
-
-            // 2. Testa o processamento dos arquivos.
-            // Se o arquivo não existir, ele apenas avisa no console.
-            gerenciador.processarTodosArquivos();
-
-        } catch (Exception e) {
-            System.out.println("Erro na inicialização: " + e.getMessage());
-        }
+            // Lê o config (ou abre a tela de configurações se for a primeira vez)
+            tela.iniciar();
+        });
     }
 }
