@@ -55,7 +55,12 @@ public class Grafo {
 			
 			// Busca o vertice não visitado mais próximo.
 			int noMaisProximo = getMaisProximos(custo, naoVisitados);
-			
+
+			// Sobrou só nó sem ligação com a origem, não tem caminho.
+			if (noMaisProximo == INDEFINIDO) {
+				break;
+			}
+
 			// Retira da lista.
 			naoVisitados.remove(noMaisProximo);
 			
@@ -86,7 +91,7 @@ public class Grafo {
 	public int getMaisProximos(final int listaCusto[], final Set<Integer> naoVisitados) {
 		
 		double minDistancia = Integer.MAX_VALUE;
-		int noProximo = 0;
+		int noProximo = INDEFINIDO;
 		for (Integer i : naoVisitados) {
 			if (listaCusto[i] < minDistancia) {
 				minDistancia = listaCusto[i];
